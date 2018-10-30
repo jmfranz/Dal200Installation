@@ -13,7 +13,7 @@ using Emgu.CV.Structure;
 
 namespace KinectV2EmguCV.Utils
 {
-    class FileUtils
+    public class FileUtils
     {
         /// <summary>
         /// Wrapper around Windows UI to load the kinect
@@ -43,6 +43,25 @@ namespace KinectV2EmguCV.Utils
                         referenceFrame[pos / sizeof(ushort)] = reader.ReadUInt16();
                         pos += sizeof(ushort);
                     }
+                }
+            }
+
+            return referenceFrame;
+        }
+
+        public static ushort[] LoadFrameFromFile(int frameWidth, int frameHeight, string filename)
+        {
+            ushort[] referenceFrame = null;
+            using (FileStream stream = new FileStream(filename, FileMode.Open))
+            using (BinaryReader reader = new BinaryReader(stream))
+            {
+                referenceFrame = new ushort[frameWidth * frameHeight];
+                var fileLengh = stream.Length;
+                var pos = 0;
+                while (pos < fileLengh)
+                {
+                    referenceFrame[pos / sizeof(ushort)] = reader.ReadUInt16();
+                    pos += sizeof(ushort);
                 }
             }
 

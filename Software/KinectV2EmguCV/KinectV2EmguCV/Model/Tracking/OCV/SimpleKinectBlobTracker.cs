@@ -18,7 +18,7 @@ namespace KinectV2EmguCV.Model.Tracking.OCV
     /// Uses OpenCV simple blob tracker to find one
     /// or more blobs. It fails for tall people
     /// </summary>
-    class SimpleKinectBlobTracker: ITopDownTrackingStrategy
+    public class SimpleKinectBlobTracker: ITopDownTrackingStrategy
     {
         private SimpleBlobDetector blobDetector;
         private SimpleBlobDetectorParams blobParams;
@@ -108,16 +108,18 @@ namespace KinectV2EmguCV.Model.Tracking.OCV
         /// <param name="minimumThreshold"></param>
         public void UpdateBlobParameters(float minimumArea, float minimumThreshold)
         {
-            blobParams = new SimpleBlobDetectorParams();
-            blobParams.FilterByArea = true;
-            blobParams.FilterByColor = true;
-            blobParams.FilterByCircularity = false;
-            blobParams.FilterByConvexity = false;
-            blobParams.FilterByInertia = false;
+            blobParams = new SimpleBlobDetectorParams
+            {
+                FilterByArea = false,
+                FilterByColor = false,
+                FilterByCircularity = false,
+                FilterByConvexity = false,
+                FilterByInertia = false,
+                blobColor = (byte) 255,
+                MinThreshold = minimumThreshold,
+                MinArea = minimumArea * minimumArea
+            };
 
-            blobParams.blobColor = (byte)255;
-            blobParams.MinThreshold = minimumThreshold;
-            blobParams.MinArea = minimumArea * minimumArea;
             blobDetector = new SimpleBlobDetector(blobParams);
         }
 
@@ -149,7 +151,7 @@ namespace KinectV2EmguCV.Model.Tracking.OCV
             Mat binaryMatrix = new Mat(kinectData.FrameHeight, kinectData.FrameWidth, DepthType.Cv8U, 1);
             binaryMatrix.SetTo(binaryImage);
 
-            using (var kp = DoBlobDetection(binaryMatrix))
+            using (var kp = DoBlobDetection(binaryMatrix,kinectData))
             {
                 BlobsDetected = 0;
                 if (kp.Size > 0)
@@ -192,20 +194,100 @@ namespace KinectV2EmguCV.Model.Tracking.OCV
 
             return binaryImage;
         }
-       
-        private VectorOfKeyPoint DoBlobDetection(Mat sourceMat)
+
+        private byte[] CreateSlicedImage(KinectTrackableSource source, ushort headHeight)
         {
-            Image<Gray, byte> blobImage = sourceMat.ToImage<Gray, byte>().PyrDown().PyrUp();
-            blobImage.SmoothBlur(10, 10, true);
-            
+            var binaryImage = new byte[source.FrameHeight * source.FrameWidth];
+            for (int i = 0; i < source.DepthFrameData.Length; i++)
+            {
+                ushort depthPixel = source.DepthFrameData[i];
+                if (depthPixel <= source.MinimumRealiableTrackingDistance)
+                    binaryImage[i] = 0;
+                else
+                {
+                    if (backgroundReference[i] > source.MinimumRealiableTrackingDistance)
+                        if (depthPixel < backgroundReference[i])
+                        {
+                            if (depthPixel < headHeight + 400)
+                                binaryImage[i] = (byte)255;
+                            else
+                            {
+                                binaryImage[i] = (byte)0;
+                            }
+                        }
+                        else
+                        {
+                            binaryImage[i] = (byte)0;
+                        }
+
+                    if (backgroundReference[i] == 0)
+                        binaryImage[i] = 255;
+                }
+            }
+
+            return binaryImage;
+        }
+
+        private VectorOfKeyPoint DoBlobDetection(Mat sourceMat, KinectTrackableSource source)
+        {
+            Image<Gray, byte> blobImage = new Image<Gray, byte>(new Size(sourceMat.Width,sourceMat.Height));
+            Mat decoratedMat = new Mat(sourceMat.Rows, sourceMat.Cols, DepthType.Cv8U, 3);
+            // = sourceMat.ToImage<Gray, byte>().PyrDown().PyrUp();
+            //Remove noise
+            CvInvoke.MedianBlur(sourceMat,blobImage,21);
+            CvInvoke.PyrDown(blobImage, blobImage);
+            CvInvoke.PyrUp(blobImage, blobImage);
+
+            //Find the person as whole
             VectorOfKeyPoint kp = new VectorOfKeyPoint();
             if (blobTrackerMaskMat != null)
                 blobDetector.DetectRaw(blobImage, kp, blobTrackerMaskMat);
             else
                 blobDetector.DetectRaw(blobImage, kp);
 
-            Mat decoratedMat = new Mat(sourceMat.Rows,sourceMat.Cols, DepthType.Cv8U,3);
-            Features2DToolbox.DrawKeypoints(blobImage.Mat,kp,decoratedMat,new Bgr(0,0,255));
+            //Get only head and shoulders
+            if (kp.Size > 0)
+            {
+                int x = (int) kp[0].Point.X;
+                int y = (int) kp[0].Point.Y;
+                int size = (int) kp[0].Size;
+                var roi = new Rectangle(
+                    x-size/2,
+                    y-size/2,
+                    size,
+                    size
+                    );
+                //TODO: Refactor to a method
+                var personImage = blobImage.Copy(roi);
+                ushort headPoint = 8000;
+                for (int i = 0; i < personImage.Cols; i++)
+                {
+                    for (int j = 0; j < personImage.Rows; j++)
+                    {
+                        if (personImage.Data[j, i, 0] < 500) continue;
+
+                        if (personImage.Data[j, i, 0] < headPoint)
+                        {
+                            headPoint = personImage.Data[j, i, 0];
+                            //highX = j;
+                            //highY = i;
+                        }
+                    }
+                }
+
+                Mat slicedBlobMat = new Mat(
+                    new Size(blobImage.Width,blobImage.Height),
+                    DepthType.Cv8U,1);
+                slicedBlobMat.SetTo(CreateSlicedImage(source,headPoint));
+                CvInvoke.MedianBlur(slicedBlobMat, slicedBlobMat, 27);
+                blobDetector.DetectRaw(slicedBlobMat, kp);
+                Features2DToolbox.DrawKeypoints(slicedBlobMat, kp, decoratedMat, new Bgr(0, 0, 255));
+            }
+            else
+            {
+                Features2DToolbox.DrawKeypoints(blobImage, kp, decoratedMat, new Bgr(0, 0, 255));
+            }
+            
             BlobDetectedImage = decoratedMat.ToImage<Bgr,byte>();
             return kp;
         }
